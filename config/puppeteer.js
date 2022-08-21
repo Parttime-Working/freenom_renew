@@ -1,6 +1,6 @@
 module.exports = {
   options: {
-    headless: true,
+    headless: process.env.HEADLESS === 'true',
     executablePath: process.env.CHROME_PATH,
     ignoreDefaultArgs: ['--disable-extensions'],
     args: [

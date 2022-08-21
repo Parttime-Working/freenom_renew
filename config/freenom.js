@@ -1,27 +1,12 @@
 const puppeteerOpts = require('./puppeteer').options
 const puppeteer = require('puppeteer')
-const util = require('util')
-const discord = require('./discord')
-const sqlite3 = require('sqlite3').verbose()
+
+const line = require('./line')
 
 const freenom = {
   browser: null,
   page: null,
   url: 'https://my.freenom.com/domains.php?a=renewals',
-  db: new sqlite3.Database(`./${process.env.DB_NAME}.db`,
-    sqlite3.OPEN_READWRITE | sqlite3.OPEN_CREATE, (err) => {
-      if (err) console.error(err.message)
-      console.log(`Connected to the ${process.env.DB_NAME} database.`)
-
-      freenom.db.run(`CREATE TABLE IF NOT EXISTS freenom(
-        id text not null,
-        name text not null primary key,
-        free tinyint not null,
-        autoRenew tinyint not null,
-        status text not null
-      )`)
-    }),
-  getDomain: async (name) => await freenom.db.get('SELECT * FROM freenom WHERE name = ?', [name]),
   close: async () => {
     if (!freenom.browser) return true
     await freenom.browser.close().then(async () => {
@@ -33,16 +18,12 @@ const freenom = {
     try {
       freenom.browser = await puppeteer.launch(puppeteerOpts)
       freenom.page = await freenom.browser.newPage()
-      await freenom.page.setViewport({width: 1900, height: 1000, deviceScaleFactor: 1})
+      await freenom.page.setViewport({ width: 1900, height: 1000, deviceScaleFactor: 1 })
 
-      await freenom.page.goto(freenom.url, {waitUntil: 'networkidle2'})
+      await freenom.page.goto(freenom.url, { waitUntil: 'networkidle2' })
 
       const title = await freenom.page.title()
       console.log(title)
-
-      freenom.db.run = util.promisify(freenom.db.run)
-      freenom.db.get = util.promisify(freenom.db.get)
-      freenom.db.all = util.promisify(freenom.db.all)
 
       await freenom.login()
       await freenom.renewFreeDomains()
@@ -87,30 +68,14 @@ const freenom = {
         return domains
       })
 
-      let message = ``
-      let i = 1
-      await Promise.all(domains.map(async domain => {
-        const id = domain.renewLink.replace('https://my.freenom.com/domains.php?a=renewdomain&domain=', '')
+      const messages = await Promise.all(domains.map(async domain => {
+        let message = ``
+        // const id = domain.renewLink.replace('https://my.freenom.com/domains.php?a=renewdomain&domain=', '')
         const daysLeft = parseInt(domain.expires.replace(' Days', ''))
-        // this condition may return false positive, due to lake of data on freenom,
-        // the false positive can occurs in the case where a free domain in renewable,
-        // that's why the scrapper should be run a first time without any free domains renewables
-        // (in this way the free domain state will be saved in db)
-        const freeDomain = (daysLeft > 14 && domain.renewable === false)
-        let row = await freenom.getDomain(domain.name)
+        message += `[${domain.name}] : **${daysLeft}** days left.\n${daysLeft < 14 ? 'Starting auto renewal.' : 'No need to renewal'}\n`
 
-        if (row === undefined) {
-          await freenom.db.run(`INSERT INTO freenom
-          (id, name, status, free, autoRenew) VALUES(?, ?, ?, ?, ?)`,
-            [id, domain.name, domain.status, freeDomain, !!freeDomain],
-          )
-          row = await freenom.getDomain(domain.name)
-        }
-
-        message += `- **${domain.name}** _(${row.free ? 'free' : 'paid'})_: **${daysLeft}** days left.\n  Auto renewal is ${row.autoRenew === 1 ? '**enabled**.' : '**disabled**.'} ${daysLeft < 14 && row.free && row.autoRenew ? 'Starting auto renewal.' : ''}\n\n`
-
-        if (daysLeft < 14 && row.free && row.autoRenew) {
-          await freenom.page.goto(domain.renewLink, {waitUntil: 'networkidle2'})
+        if (daysLeft < 14) {
+          await freenom.page.goto(domain.renewLink, { waitUntil: 'networkidle2' })
           await freenom.page.waitForSelector('.renewDomains')
           await freenom.page.evaluate(() => document.getElementsByTagName('option')[11].selected = true)
           await freenom.page.evaluate(() => document.getElementsByTagName('form')[0].submit())
@@ -119,30 +84,23 @@ const freenom = {
           })
           message += `**[${domain.name}]** Auto renewal complete !`
         }
-        messages.push(message)
-        message = ''
 
-        if (i === domains.length) {
-          const message = messages.join().replace(/,-/g, '-')
-          console.log('message: ', message)
-          if (message.length <= 2000 && i < 8) await discord(message)
-          else {
-            let timer = 0
-            await Promise.all(messages.map(async msg => {
-              timer += 500
-              setTimeout(async () => {
-                console.log('message length > 2000', msg)
-                await discord(msg)
-              }, timer) // to avoid discord rate limited
-            }))
-          }
-        }
-        i += 1
+        return message
       }))
+
+      await line.broadcast({
+        type: 'text',
+        text: `${messages.join('\n')}`,
+      })
     } catch (e) {
       console.error('[renew] Error', e)
-      await freenom.close()
+
+      await line.broadcast({
+        type: 'text',
+        text: `${e.message}`,
+      })
     }
+    await freenom.close()
   },
 }
 
