@@ -25,7 +25,23 @@ const freenom = {
       const title = await freenom.page.title()
       console.log(title)
 
-      await freenom.login()
+
+      const isLoggedIn = await new Promise((resolve) => {
+        freenom.page
+          .waitForSelector('section.renewalContent', { timeout: 3 * 1000 })
+          .then(() => resolve(true))
+          .catch(() => resolve(false))
+      })
+
+      if (!isLoggedIn) {
+        // need human, maybe
+        await line.broadcast({
+          type: 'text',
+          text: `Auth timeout, please manual auth.`,
+        })
+        await freenom.login()
+      };
+
       await freenom.renewFreeDomains()
     } catch (e) {
       console.error('[INIT] Failed', e)
@@ -43,8 +59,13 @@ const freenom = {
       await freenom.page
         .type('input[name="password"]', process.env.FREENOM_PASS, { delay: 35 })
         .then(async () => console.log('Password complete'))
+
+      await freenom.page.evaluate(() => {
+        document.querySelector("#rememberMe").click();
+      });
+
       await freenom.page.evaluate(() => document.getElementsByTagName('form')[0].submit())
-      await freenom.page.waitForSelector('.renewalContent')
+      await freenom.page.waitForSelector('.renewalContent', { timeout: 12 * 60 * 60 * 1000 })
       console.log('connected')
     } catch (e) {
       console.error('[login] Error', e)
@@ -70,7 +91,6 @@ const freenom = {
 
       const messages = await Promise.all(domains.map(async domain => {
         let message = ``
-        // const id = domain.renewLink.replace('https://my.freenom.com/domains.php?a=renewdomain&domain=', '')
         const daysLeft = parseInt(domain.expires.replace(' Days', ''))
         message += `[${domain.name}] : **${daysLeft}** days left.\n${daysLeft < 14 ? 'Starting auto renewal.' : 'No need to renewal'}\n`
 
